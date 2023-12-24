@@ -1,11 +1,10 @@
 import { ethers } from "ethers"
 import {
-  mergeMap,
+  concatMap,
   map,
   forkJoin,
   from,
-  retry,
-  catchError
+  tap
 } from "rxjs"
 
 import poolAbi from "../abis/pool.json"
@@ -109,7 +108,7 @@ const fetchFees = (wallet: ethers.Wallet) => {
 }
 
 const fetchOnChainData = (wallet: ethers.Wallet, wethAddress: Address) => {
-  return mergeMap((pair: PairCreated) => {
+  return concatMap((pair: PairCreated) => {
     return forkJoin({
       token0: fetchTokenInfo(pair.token0, wallet),
       token1: fetchTokenInfo(pair.token1, wallet),
@@ -152,7 +151,8 @@ const fetchOnChainData = (wallet: ethers.Wallet, wethAddress: Address) => {
           ...data,
           liquidityUsd
         }
-      })
+      }),
+      tap((data) => console.log("Data", data))
     )
   })
 }

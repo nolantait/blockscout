@@ -1,7 +1,7 @@
 import { fetchGoSecurity } from "./off_chain/go_security"
 import { fetchDexscreener } from "./off_chain/dexscreener"
 import {
-  mergeMap,
+  concatMap,
   map,
   forkJoin,
 } from "rxjs"
@@ -13,7 +13,7 @@ type PairCreated = {
 }
 
 const fetchOffChainData = () => {
-  return mergeMap((pair: PairCreated) => {
+  return concatMap((pair: PairCreated) => {
     const security = fetchGoSecurity(1, pair.token0)
     const dexscreener = fetchDexscreener(pair.token0)
 

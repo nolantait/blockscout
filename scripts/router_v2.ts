@@ -2,7 +2,6 @@ import { ethers } from "ethers"
 import {
   map,
   from,
-  mergeMap,
   concatMap,
 } from "rxjs"
 

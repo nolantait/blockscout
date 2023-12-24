@@ -3,10 +3,9 @@ import {
   tap,
   map,
   concatMap,
-  mergeMap,
 } from "rxjs"
 
-import { getNonce, getBalance, getEthBalance } from "./on_chain"
+import { getBalance, getEthBalance } from "./on_chain"
 import { swapTokens, approveToken } from "./router_v2"
 
 type Address = `0x${string}`
@@ -21,7 +20,7 @@ type Data = {
 }
 
 const simulateSwap = (wallet: ethers.Wallet, router: Address) => {
-  return mergeMap((data: Data) => {
+  return concatMap((data: Data) => {
     let originalBalance: bigint
     let boughtBalance: bigint
     let finalBalance: bigint
