@@ -15,11 +15,15 @@ const ETH_PRICE = 2200
 type Address = `0x${string}`
 
 const getNonce = (wallet: ethers.Wallet) => {
-  return from(wallet.provider!.getTransactionCount(wallet.address))
+  if (wallet.provider === null) throw "Missing provider"
+
+  return from(wallet.provider.getTransactionCount(wallet.address))
 }
 
 const getEthBalance = (wallet: ethers.Wallet) => {
-  return from(wallet.provider!.getBalance(wallet.address))
+  if (wallet.provider === null) throw "Missing provider"
+
+  return from(wallet.provider.getBalance(wallet.address))
 }
 
 const getBalance = (token: Address, wallet: ethers.Wallet) => {
@@ -38,11 +42,6 @@ const fetchLiqudity = (pair: Address, wallet: ethers.Wallet) => {
     contract.price1CumulativeLast(),
     contract.kLast()
   ])).pipe(
-    // catchError((error) => {
-    //   console.log("Error fetching liquidity", error.info)
-    //   throw error
-    // }),
-    // retry({ count: 2, delay: 3000 }),
     map(([reserves, price0, price1, klast]) => {
       const [tokenReserves0, tokenReserves1] = reserves
 
@@ -90,66 +89,61 @@ const fetchTokenInfo = (token: Address, wallet: ethers.Wallet) => {
   )
 }
 
+const fetchFees = (wallet: ethers.Wallet) => {
+  if (wallet.provider === null) throw "Missing provider"
+
+  return from(wallet.provider.getFeeData())
+}
+
 type PairCreated = {
   token0: Address,
   token1: Address,
   pair: Address
 }
 
-const fetchFees = (wallet: ethers.Wallet) => {
-  if (!wallet.provider) throw "Missing provider"
-
-  return from(
-    new Promise<ethers.FeeData>(async resolve => {
-      const feeData = await wallet.provider!.getFeeData()
-      resolve(feeData)
-    })
-  )
-}
-
 const fetchOnChainData = (wallet: ethers.Wallet, wethAddress: Address) => {
-  return concatMap((pair: PairCreated) => {
+  return concatMap(({ token0, token1, pair }: PairCreated) => {
     return forkJoin({
-      token0: fetchTokenInfo(pair.token0, wallet),
-      token1: fetchTokenInfo(pair.token1, wallet),
-      liquidity: fetchLiqudity(pair.pair, wallet),
+      token0: fetchTokenInfo(token0, wallet),
+      token1: fetchTokenInfo(token1, wallet),
+      liquidity: fetchLiqudity(pair, wallet),
       fees: fetchFees(wallet)
     }).pipe(
       map(({ token0, token1, liquidity, fees }) => {
-        if (token0.address.toLowerCase() === wethAddress.toLowerCase()) {
-          return {
-            fees,
-            klast: liquidity.klast,
-            weth: {
-              ...token1,
-              ...liquidity.token1
-            },
-            token: {
-              ...token0,
-              ...liquidity.token0
-            }
-          }
-        } else {
-          return {
-            fees,
-            klast: liquidity.klast,
-            weth: {
-              ...token1,
-              ...liquidity.token1
-            },
-            token: {
-              ...token0,
-              ...liquidity.token0
-            }
+        return {
+          klast: liquidity.klast,
+          fees,
+          token0: {
+            ...token0,
+            ...liquidity.token0
+          },
+          token1: {
+            ...token1,
+            ...liquidity.token1
           }
         }
       }),
       map((data) => {
-        const liquidityUsd = parseFloat(ethers.formatEther(data.weth.reserves)) * 2 * ETH_PRICE
-
+          if (data.token0.address.toLowerCase() === wethAddress.toLowerCase()) {
+            return {
+              weth: data.token0,
+              token: data.token1,
+              fees: data.fees,
+              klast: data.klast
+            }
+          } else {
+            return {
+              weth: data.token1,
+              token: data.token0,
+              fees: data.fees,
+              klast: data.klast
+            }
+          }
+      }),
+      map((data) => {
         return {
           ...data,
-          liquidityUsd
+          liquidityUsd: parseFloat(ethers.formatEther(data.weth.reserves)) * 2 * ETH_PRICE
         }
       }),
       tap((data) => console.log("Data", data))
