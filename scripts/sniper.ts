@@ -5,9 +5,11 @@ import {
   filter,
 } from "rxjs"
 
-import factoryV2Abi from "../abis/factory_v2.json"
 import { fetchOnChainData } from "./on_chain"
 import { simulateSwap, resetFork } from "./simulation"
+import Client from "./client"
+import RouterV2 from "./router_v2"
+import factoryAbi from "../abis/factory_v2.json"
 
 const config = {
   privateKey: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
@@ -56,11 +58,9 @@ const lowFees = (data: any) => {
 }
 
 async function main() {
-  const provider = new ethers.WebSocketProvider(config.websocketUrl)
-  const wallet = new ethers.Wallet(config.privateKey, provider)
-  const localProvider = new ethers.JsonRpcProvider("http://localhost:8545")
-  const localWallet = new ethers.Wallet(config.privateKey, localProvider)
-  const contract = new ethers.Contract(config.factoryV2, factoryV2Abi, wallet)
+  const client = new Client(config.websocketUrl, config.privateKey)
+  const testClient = new Client("http://localhost:8545", config.privateKey)
+  const factory = new ethers.Contract(config.factoryV2, factoryAbi, client.wallet)
 
   console.log("Listening for new pairs...")
 
@@ -69,10 +69,10 @@ async function main() {
   stream.pipe(
     tap(logPairCreated),
     filter(wethOnly),
-    fetchOnChainData(wallet, config.weth),
+    fetchOnChainData(client),
     filter(enoughLiquidty),
-    resetFork(provider),
-    simulateSwap(localWallet, config.routerV2),
+    resetFork(testClient),
+    simulateSwap(testClient),
     filter(lowFees),
   ).subscribe({
     next: (result) => {
@@ -83,7 +83,7 @@ async function main() {
     },
   })
 
-  contract.on(
+  factory.on(
     "PairCreated",
     (token0, token1, pair) => {
       stream.next({ token0, token1, pair })

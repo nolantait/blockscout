@@ -3,11 +3,11 @@ import {
   tap,
   map,
   concatMap,
+  from,
 } from "rxjs"
 import hre from "hardhat"
-
-import { getBalance, getEthBalance } from "./on_chain"
-import { swapTokens, approveToken } from "./router_v2"
+import Client from "./client"
+import RouterV2 from "./router_v2"
 
 type Address = `0x${string}`
 type Data = {
@@ -21,10 +21,10 @@ type Data = {
   fees: ethers.FeeData,
 }
 
-const resetFork = <T>(provider: ethers.WebSocketProvider) => {
+const resetFork = <T>(client: Client) => {
   return concatMap((data: T) => {
     return new Promise<typeof data>(async resolve => {
-      const latestBlock = await provider.getBlockNumber()
+      const latestBlock = await client.latestBlockNumber()
       console.log("Resetting local chain...")
       await hre.network.provider.request({
         method: "anvil_reset",
@@ -41,8 +41,57 @@ const resetFork = <T>(provider: ethers.WebSocketProvider) => {
   })
 }
 
+const unwrapTransaction = (tx: ethers.ContractTransactionResponse) => {
+  const receipt = tx.wait()
+  if (!receipt) throw new Error("No receipt")
 
-const simulateSwap = (wallet: ethers.Wallet, router: Address) => {
+  return receipt as Promise<ethers.ContractTransactionReceipt>
+}
+
+const calculateGas = (receipt: ethers.ContractTransactionReceipt) => {
+  return {
+    used: receipt.gasUsed,
+    price: receipt.gasPrice,
+    total: receipt.gasUsed * receipt.gasPrice,
+    formatted: ethers.formatEther(receipt.gasUsed * receipt.gasPrice)
+  }
+}
+
+type SwapParams = {
+  token: Address
+  weth: Address
+  amountIn: bigint
+  amountOutMin: bigint
+  gasPrice: bigint
+  side: "buy" | "sell"
+}
+
+const swapTokens = (
+  router: RouterV2,
+  params: SwapParams
+) => {
+  return from(router.swapTokens(params)).pipe(
+    concatMap(unwrapTransaction),
+    map(calculateGas),
+    tap((gas) => console.log("GAS REPORT:", gas))
+  )
+}
+
+const approveToken = (
+  router: RouterV2,
+  token: Address
+) => {
+  return from(router.approve(token)).pipe(
+    concatMap((tx) => {
+      return tx.wait()
+    })
+  )
+}
+
+
+const simulateSwap = (client: Client) => {
+  const router = new RouterV2(client)
+
   return concatMap((data: Data) => {
     let originalBalance: bigint
     let boughtBalance: bigint
@@ -50,15 +99,12 @@ const simulateSwap = (wallet: ethers.Wallet, router: Address) => {
     let buyGas: any
     let sellGas: any
 
-    return getEthBalance(wallet).pipe(
-      tap((balance) => {
-        originalBalance = balance
-      }),
+    return from(client.balance()).pipe(
+      tap((balance) => { originalBalance = balance }),
       concatMap(() => {
         return swapTokens(
-          wallet,
+          router,
           {
-            router,
             weth: data.weth.address,
             token: data.token.address,
             amountIn: ethers.parseUnits("0.05"),
@@ -72,22 +118,18 @@ const simulateSwap = (wallet: ethers.Wallet, router: Address) => {
         buyGas = gasReport
       }),
       concatMap(() => {
-        return approveToken(
-          wallet,
-          { token: data.token.address, router }
-        )
+        return approveToken(router, data.token.address)
       }),
       concatMap(() => {
-        return getBalance(data.token.address, wallet)
+        return client.balanceOf(data.token.address)
       }),
       tap((balance) => {
         boughtBalance = balance
       }),
       concatMap((balance) => {
         return swapTokens(
-          wallet,
+          router,
           {
-            router,
             token: data.token.address,
             weth: data.weth.address,
             amountIn: balance,
@@ -101,7 +143,7 @@ const simulateSwap = (wallet: ethers.Wallet, router: Address) => {
         sellGas = gasReport
       }),
       concatMap(() => {
-        return getEthBalance(wallet)
+        return client.balance()
       }),
       tap((balance) => {
         finalBalance = balance

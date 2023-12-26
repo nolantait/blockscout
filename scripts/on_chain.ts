@@ -7,34 +7,24 @@ import {
   tap
 } from "rxjs"
 
-import poolAbi from "../abis/pool.json"
-import erc20Abi from "../abis/erc20.json"
-
-const ETH_PRICE = 2200
+import Client from "./client"
 
 type Address = `0x${string}`
 
-const getNonce = (wallet: ethers.Wallet) => {
-  if (wallet.provider === null) throw "Missing provider"
-
-  return from(wallet.provider.getTransactionCount(wallet.address))
+const getNonce = (client: Client) => {
+  return from(client.nonce())
 }
 
-const getEthBalance = (wallet: ethers.Wallet) => {
-  if (wallet.provider === null) throw "Missing provider"
-
-  return from(wallet.provider.getBalance(wallet.address))
+const getEthBalance = (client: Client) => {
+  return from(client.balance())
 }
 
-const getBalance = (token: Address, wallet: ethers.Wallet) => {
-  const contract = new ethers.Contract(token, erc20Abi, wallet)
-
-  return from(contract.balanceOf(wallet.address))
+const getBalance = (token: Address, client: Client) => {
+  return from(client.balanceOf(token))
 }
 
-const fetchLiqudity = (pair: Address, wallet: ethers.Wallet) => {
-  console.log("Fetching liquidity for", pair)
-  const contract = new ethers.Contract(pair, poolAbi, wallet)
+const fetchLiqudity = (pair: Address, client: Client) => {
+  const contract = client.pool(pair)
 
   return from(Promise.all([
     contract.getReserves(),
@@ -66,8 +56,8 @@ type TokenInfo = {
   address: Address
 }
 
-const fetchTokenInfo = (token: Address, wallet: ethers.Wallet) => {
-  const contract = new ethers.Contract(token, erc20Abi, wallet)
+const fetchTokenInfo = (token: Address, client: Client) => {
+  const contract = client.token(token)
 
   return from(Promise.all([
     contract.name(),
@@ -87,10 +77,8 @@ const fetchTokenInfo = (token: Address, wallet: ethers.Wallet) => {
   )
 }
 
-const fetchFees = (wallet: ethers.Wallet) => {
-  if (wallet.provider === null) throw "Missing provider"
-
-  return from(wallet.provider.getFeeData())
+const fetchFees = (client: Client) => {
+  return from(client.fees())
 }
 
 type PairCreated = {
@@ -99,13 +87,13 @@ type PairCreated = {
   pair: Address
 }
 
-const fetchOnChainData = (wallet: ethers.Wallet, wethAddress: Address) => {
+const fetchOnChainData = (client: Client) => {
   return concatMap(({ token0, token1, pair }: PairCreated) => {
     return forkJoin({
-      token0: fetchTokenInfo(token0, wallet),
-      token1: fetchTokenInfo(token1, wallet),
-      liquidity: fetchLiqudity(pair, wallet),
-      fees: fetchFees(wallet)
+      token0: fetchTokenInfo(token0, client),
+      token1: fetchTokenInfo(token1, client),
+      liquidity: fetchLiqudity(pair, client),
+      fees: fetchFees(client)
     }).pipe(
       map(({ token0, token1, liquidity, fees }) => {
         return {
@@ -121,7 +109,7 @@ const fetchOnChainData = (wallet: ethers.Wallet, wethAddress: Address) => {
         }
       }),
       map((data) => {
-          if (data.token0.address.toLowerCase() === wethAddress.toLowerCase()) {
+          if (client.isWeth(data.token0.address)) {
             return {
               weth: data.token0,
               token: data.token1,
@@ -136,9 +124,10 @@ const fetchOnChainData = (wallet: ethers.Wallet, wethAddress: Address) => {
           }
       }),
       map((data) => {
+      const liquidityUsd = parseFloat(ethers.formatEther(data.weth.reserves)) * 2 * client.wethPrice
         return {
           ...data,
-          liquidityUsd: parseFloat(ethers.formatEther(data.weth.reserves)) * 2 * ETH_PRICE
+          liquidityUsd
         }
       }),
       tap((data) => console.log("Data", data))

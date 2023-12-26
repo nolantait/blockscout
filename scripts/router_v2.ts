@@ -1,18 +1,11 @@
 import { ethers } from "ethers"
-import {
-  map,
-  from,
-  concatMap,
-  tap,
-  Observable
-} from "rxjs"
-
+import Client from "./client"
 import routerAbi from "../abis/router_v2.json"
-import erc20Abi from "../abis/erc20.json"
 
-import { getNonce } from "./on_chain"
+const routerV2 = "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D" as const
 
 type Address = `0x${string}`
+
 type QuoteParams = {
   router: Address
   tokenIn: Address
@@ -20,21 +13,7 @@ type QuoteParams = {
   amountIn: bigint
 }
 
-const fetchQuote = (
-  wallet: ethers.Wallet,
-  { router, tokenIn, tokenOut, amountIn }: QuoteParams
-) => {
-  const contract = new ethers.Contract(router, routerAbi, wallet)
-
-  return from(contract.getAmountsOut(amountIn, [tokenIn, tokenOut])).pipe(
-    map(([amountOut]) => {
-      return ethers.formatEther(amountOut)
-    })
-  )
-}
-
 type SwapParams = {
-  router: Address
   token: Address
   weth: Address
   amountIn: bigint
@@ -43,116 +22,68 @@ type SwapParams = {
   side: "buy" | "sell"
 }
 
-const sellTokens = (contract: ethers.Contract, ...params: any[]): Observable<ethers.ContractTransactionResponse> => {
-  return from(contract.swapExactTokensForETHSupportingFeeOnTransferTokens(...params))
-}
+export default class RouterV2 {
+  private _client: Client
+  private _contract: ethers.Contract
 
-const buyTokens = (contract: ethers.Contract, ...params: any[]): Observable<ethers.ContractTransactionResponse> => {
-  console.log("buyTokens", params)
-  return from(contract.swapExactETHForTokensSupportingFeeOnTransferTokens(...params))
-}
+  constructor(client: Client) {
+    this._client = client
+    this._contract = this._client.contract(routerV2, routerAbi)
+  }
 
-const unwrapTransaction = (tx: ethers.ContractTransactionResponse) => {
-  const receipt = tx.wait()
-  if (!receipt) throw new Error("No receipt")
+  async quote(params: QuoteParams): Promise<bigint> {
+    return await this._contract.getAmountsOut(params.amountIn, [params.tokenIn, params.tokenOut])
+  }
 
-  return receipt as Promise<ethers.ContractTransactionReceipt>
-}
+  async approve(token: Address): Promise<ethers.ContractTransactionResponse> {
+    return await this._client.approve(token, routerV2)
+  }
 
-const calculateGas = (receipt: ethers.ContractTransactionReceipt) => {
-  return {
-    used: receipt.gasUsed,
-    price: receipt.gasPrice,
-    total: receipt.gasUsed * receipt.gasPrice,
-    formatted: ethers.formatEther(receipt.gasUsed * receipt.gasPrice)
+  async swapTokens({
+    side,
+    token,
+    weth,
+    amountIn,
+    amountOutMin,
+    gasPrice
+  }: SwapParams): Promise<ethers.ContractTransactionResponse> {
+    const deadline = Math.floor(Date.now() / 1000) + 60 * 20
+    const nonce = await this._client.nonce()
+
+    if (side === "sell") {
+      return await this.sellTokens(
+        amountIn,
+        amountOutMin,
+        [token, weth],
+        this._client.walletAddress,
+        deadline,
+        {
+          gasLimit: 2000000n,
+          gasPrice,
+          nonce
+        }
+      )
+    } else {
+      return await this.buyTokens(
+        amountOutMin,
+        [weth, token],
+        this._client.walletAddress,
+        deadline,
+        {
+          gasLimit: 2000000n,
+          gasPrice,
+          value: amountIn,
+          nonce
+        }
+      )
+    }
+  }
+
+  sellTokens(...params: any[]): Promise<ethers.ContractTransactionResponse> {
+    return this._contract.swapExactTokensForETHSupportingFeeOnTransferTokens(...params)
+  }
+
+  buyTokens(...params: any[]): Promise<ethers.ContractTransactionResponse> {
+    return this._contract.swapExactETHForTokensSupportingFeeOnTransferTokens(...params)
   }
 }
-
-
-const swapTokens = (
-  wallet: ethers.Wallet,
-  { router, token, weth, amountIn, amountOutMin, gasPrice, side }: SwapParams
-) => {
-  const contract = new ethers.Contract(router, routerAbi, wallet)
-  const deadline = Math.floor(Date.now() / 1000) + 60 * 20
-
-  console.log(`
-    router: ${router}
-    amountIn: ${amountIn}
-    amountOutMin: ${amountOutMin}
-    token: ${token}
-    weth: ${weth}
-    wallet.address: ${wallet.address}
-    deadline: ${deadline}
-  `)
-
-  return getNonce(wallet).pipe(
-    concatMap((nonce) => {
-      console.log("swapTokens nonce", nonce)
-
-      if (side === "sell") {
-        return sellTokens(
-          contract,
-          amountIn,
-          amountOutMin,
-          [token, weth],
-          wallet.address,
-          deadline,
-          {
-            gasLimit: 2000000n,
-            gasPrice,
-            nonce
-          }
-        ).pipe(
-          concatMap(unwrapTransaction),
-          map(calculateGas),
-          tap((gas) => console.log("GAS REPORT:", gas))
-        )
-      } else {
-        return buyTokens(
-          contract,
-          amountOutMin,
-          [weth, token],
-          wallet.address,
-          deadline,
-          {
-            gasLimit: 2000000n,
-            gasPrice,
-            value: amountIn,
-            nonce
-          }
-        ).pipe(
-          concatMap(unwrapTransaction),
-          map(calculateGas),
-          tap((gas) => console.log("GAS REPORT:", gas))
-        )
-      }
-    })
-  )
-}
-
-type ApproveParams = {
-  token: Address
-  router: Address
-}
-
-const approveToken = (
-  wallet: ethers.Wallet,
-  { token, router }: ApproveParams
-) => {
-  const contract = new ethers.Contract(token, erc20Abi, wallet)
-
-  return getNonce(wallet).pipe(
-    concatMap((nonce) => {
-      console.log("approveToken nonce", nonce)
-
-      return from(contract.approve(router, ethers.MaxUint256, { nonce })).pipe(
-        concatMap((tx) => {
-          return tx.wait()
-        })
-      )
-    })
-  )
-}
-
-export { fetchQuote, swapTokens, approveToken }
