@@ -40,13 +40,11 @@ const fetchLiqudity = (pair: Address, wallet: ethers.Wallet) => {
     contract.getReserves(),
     contract.price0CumulativeLast(),
     contract.price1CumulativeLast(),
-    contract.kLast()
   ])).pipe(
-    map(([reserves, price0, price1, klast]) => {
+    map(([reserves, price0, price1]) => {
       const [tokenReserves0, tokenReserves1] = reserves
 
       return {
-        klast,
         token0: {
           reserves: tokenReserves0,
           price: price0
@@ -111,7 +109,6 @@ const fetchOnChainData = (wallet: ethers.Wallet, wethAddress: Address) => {
     }).pipe(
       map(({ token0, token1, liquidity, fees }) => {
         return {
-          klast: liquidity.klast,
           fees,
           token0: {
             ...token0,
@@ -129,14 +126,12 @@ const fetchOnChainData = (wallet: ethers.Wallet, wethAddress: Address) => {
               weth: data.token0,
               token: data.token1,
               fees: data.fees,
-              klast: data.klast
             }
           } else {
             return {
               weth: data.token1,
               token: data.token0,
               fees: data.fees,
-              klast: data.klast
             }
           }
       }),

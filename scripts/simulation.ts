@@ -4,6 +4,7 @@ import {
   map,
   concatMap,
 } from "rxjs"
+import hre from "hardhat"
 
 import { getBalance, getEthBalance } from "./on_chain"
 import { swapTokens, approveToken } from "./router_v2"
@@ -15,15 +16,39 @@ type Data = {
   },
   token: {
     address: Address,
+    decimals: number,
   },
   fees: ethers.FeeData,
 }
+
+const resetFork = <T>(provider: ethers.WebSocketProvider) => {
+  return concatMap((data: T) => {
+    return new Promise<typeof data>(async resolve => {
+      const latestBlock = await provider.getBlockNumber()
+      console.log("Resetting local chain...")
+      await hre.network.provider.request({
+        method: "anvil_reset",
+        params: [{
+          forking: {
+            jsonRpcUrl: "https://mainnet.infura.io/v3/c71051e5a5a54c1c9d1f51cff8838316",
+            blockNumber: latestBlock,
+          }
+        }]
+      })
+      console.log("Reset complete.")
+      resolve(data)
+    })
+  })
+}
+
 
 const simulateSwap = (wallet: ethers.Wallet, router: Address) => {
   return concatMap((data: Data) => {
     let originalBalance: bigint
     let boughtBalance: bigint
     let finalBalance: bigint
+    let buyGas: any
+    let sellGas: any
 
     return getEthBalance(wallet).pipe(
       tap((balance) => {
@@ -42,6 +67,9 @@ const simulateSwap = (wallet: ethers.Wallet, router: Address) => {
             side: "buy"
           }
         )
+      }),
+      tap((gasReport) => {
+        buyGas = gasReport
       }),
       concatMap(() => {
         return approveToken(
@@ -69,22 +97,35 @@ const simulateSwap = (wallet: ethers.Wallet, router: Address) => {
           }
         )
       }),
+      tap((gasReport) => {
+        sellGas = gasReport
+      }),
       concatMap(() => {
         return getEthBalance(wallet)
       }),
       tap((balance) => {
         finalBalance = balance
       }),
-      map(() => (
-        {
-          originalBalance: ethers.formatEther(originalBalance),
-          boughtBalance: ethers.formatEther(boughtBalance),
-          finalBalance: ethers.formatEther(finalBalance),
-          difference: ethers.formatEther(finalBalance - originalBalance)
+      map(() => {
+        const difference = finalBalance - originalBalance
+        const fees = difference + (buyGas.total + sellGas.total)
+
+        return {
+          ...data,
+          simulation: {
+            originalBalance: ethers.formatEther(originalBalance),
+            boughtBalance: ethers.formatUnits(boughtBalance, data.token.decimals),
+            finalBalance: ethers.formatEther(finalBalance),
+            difference: ethers.formatEther(difference),
+            fees: ethers.formatEther(fees),
+            feePercent: (parseFloat(ethers.formatEther(fees)) / 0.05) * 100.0,
+            buyGas,
+            sellGas,
+          }
         }
-      ))
+      })
     )
   })
 }
 
-export { simulateSwap }
+export { simulateSwap, resetFork }

@@ -2,15 +2,12 @@ import { ethers } from "ethers"
 import {
   Subject,
   tap,
-  concatMap,
   filter,
 } from "rxjs"
-import hre from "hardhat"
 
 import factoryV2Abi from "../abis/factory_v2.json"
-import erc20Abi from "../abis/erc20.json"
 import { fetchOnChainData } from "./on_chain"
-import { simulateSwap } from "./simulation"
+import { simulateSwap, resetFork } from "./simulation"
 
 const config = {
   privateKey: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
@@ -39,24 +36,23 @@ const logPairCreated = (event: PairCreated) => {
   `)
 }
 
-const resetFork = <T>(provider: ethers.WebSocketProvider) => {
-  return concatMap((data: T) => {
-    return new Promise<typeof data>(async resolve => {
-      const latestBlock = await provider.getBlockNumber()
-      console.log("Resetting local chain...")
-      await hre.network.provider.request({
-        method: "hardhat_reset",
-        params: [{
-          forking: {
-            jsonRpcUrl: "https://mainnet.infura.io/v3/c71051e5a5a54c1c9d1f51cff8838316",
-            blockNumber: latestBlock,
-          }
-        }]
-      })
-      console.log("Reset complete.")
-      resolve(data)
-    })
-  })
+const wethOnly = (pair: PairCreated) => {
+  const valid = pair.token0.toLowerCase() === config.weth.toLowerCase() ||
+    pair.token1.toLowerCase() === config.weth.toLowerCase()
+  if (!valid) console.log("Skipping pair, not weth", pair)
+  return valid
+}
+
+const enoughLiquidty = (data: any) => {
+  const valid = data.liquidityUsd >= 10_000
+  if (!valid) console.log("Skipping pair, insufficient liquidity", data)
+  return valid
+}
+
+const lowFees = (data: any) => {
+  const valid = data.simulation.feePercent <= 15.0
+  if (!valid) console.log("Skipping pair, high fees", data)
+  return valid
 }
 
 async function main() {
@@ -66,26 +62,18 @@ async function main() {
   const localWallet = new ethers.Wallet(config.privateKey, localProvider)
   const contract = new ethers.Contract(config.factoryV2, factoryV2Abi, wallet)
 
-  const wethContract = new ethers.Contract(config.weth, erc20Abi, localWallet)
-  await wethContract.approve(config.factoryV2, ethers.MaxUint256)
-
   console.log("Listening for new pairs...")
 
   const stream = new Subject<PairCreated>()
 
   stream.pipe(
     tap(logPairCreated),
-    filter((pair) => {
-      const valid = pair.token0.toLowerCase() === config.weth.toLowerCase() ||
-        pair.token1.toLowerCase() === config.weth.toLowerCase()
-
-      if (!valid) console.log("Skipping pair", pair)
-
-      return valid
-    }),
+    filter(wethOnly),
     fetchOnChainData(wallet, config.weth),
+    filter(enoughLiquidty),
     resetFork(provider),
     simulateSwap(localWallet, config.routerV2),
+    filter(lowFees),
   ).subscribe({
     next: (result) => {
       console.log("Result", result)
@@ -102,11 +90,11 @@ async function main() {
     }
   )
 
-  // stream.next({
-  //   token0: "0xA9E8aCf069C58aEc8825542845Fd754e41a9489A" as const,
-  //   token1: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2" as const,
-  //   pair: "0xDDd23787a6B80A794d952f5fb036D0b31A8E6aff" as const
-  // })
+  stream.next({
+    token0: "0x14feE680690900BA0ccCfC76AD70Fd1b95D10e16" as const,
+    token1: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2" as const,
+    pair: "0x2a6c340bCbb0a79D3deecD3bc5cBc2605ea9259f" as const
+  })
 }
 
 main().catch((error) => {
