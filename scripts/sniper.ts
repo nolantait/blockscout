@@ -11,7 +11,6 @@ import {
 import { fetchOnChainData } from "./on_chain"
 import { simulateSwap } from "./simulation"
 import Client from "./client"
-import factoryAbi from "../abis/factory_v2.json"
 
 type Address = `0x${string}`
 
@@ -65,7 +64,7 @@ async function main() {
   console.log("Starting sniper...")
   const client = new Client(config.rpcUrl, config.privateKey)
   console.log("Client started:", client.walletAddress)
-  const testClient = new Client("http://localhost:8545", config.privateKey)
+  const testClient = new Client("http://127.0.0.1:8545", config.privateKey)
   console.log("Test client started:", client.walletAddress)
 
   // const factory = new ethers.Contract(config.factoryV2, factoryAbi, client.wallet)

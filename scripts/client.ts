@@ -93,8 +93,8 @@ export default class Client {
     return this.provider.getBlockNumber()
   }
 
-  async balance(): Promise<bigint> {
-    return this.provider.getBalance(this.wallet.address)
+  async balance(latestBlock?: number): Promise<bigint> {
+    return this.provider.getBalance(this.wallet.address, latestBlock || "latest")
   }
 
   async balanceOf(address: Address): Promise<bigint> {

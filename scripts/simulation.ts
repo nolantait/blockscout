@@ -31,9 +31,10 @@ const fastTransaction = async (client: Client, promise: Promise<ethers.Transacti
 }
 
 const snapshot = async (client: Client, promise: Promise<ethers.TransactionResponse>) => {
-  const originalBalance = await client.balance()
+  const latestBlock = await client.latestBlockNumber()
+  const originalBalance = await client.balance(latestBlock)
   const receipt = await fastTransaction(client, promise)
-  const finalBalance = await client.balance()
+  const finalBalance = await client.balance(latestBlock + 1)
 
   if (!receipt) throw new Error("Could not fetch receipt...")
 
@@ -48,9 +49,10 @@ const snapshot = async (client: Client, promise: Promise<ethers.TransactionRespo
 }
 
 const simulateSwap = async (client: Client, data: any) => {
+  const simulation = new Simulation()
   console.log("Simulating swap...")
   const router = new RouterV2(client)
-  await measure("Fork reset:", async () => await resetFork())
+  await measure("Fork reset:", async () => resetFork())
   console.log("Fork reset...")
   const spent = ethers.parseUnits("0.05")
   console.log("Buying...")
@@ -64,11 +66,16 @@ const simulateSwap = async (client: Client, data: any) => {
       side: "buy"
     })
   )
+
+  simulation.addStage("Buy", buy.start, buy.finish, buy.gas)
+
   console.log("Approving...")
   const approve = await snapshot(
     client,
     router.approve(data.token.address)
   )
+
+  simulation.addStage("Approve", approve.finish, approve.finish, approve.gas)
 
   const balance = await client.balanceOf(data.token.address)
   console.log("Selling...")
@@ -82,20 +89,45 @@ const simulateSwap = async (client: Client, data: any) => {
       side: "sell"
     })
   )
+
+  simulation.addStage("Sell", sell.start, sell.finish, sell.gas)
   console.log("SOLD!!")
 
-  const loss = sell.finish - buy.start
-  const totalGas = buy.gas + sell.gas + approve.gas
-  const fee = Number(loss + totalGas) / Number(spent) * 100.0
+  return simulation
+}
 
-  return {
-    spent,
-    buy,
-    approve,
-    sell,
-    loss: ethers.formatEther(loss),
-    fee,
-    totalGas: ethers.formatEther(totalGas)
+type Stage = {
+  name: string,
+  start: bigint,
+  finish: bigint,
+  gas: bigint
+}
+
+class Simulation {
+  stages: Stage[]
+
+  constructor(stages: Stage[] = []) {
+    this.stages = stages
+  }
+
+  addStage(name: string, start: bigint, finish: bigint, gas: bigint) {
+    this.stages.push({ name, start, finish, gas })
+  }
+
+  get fees(): number {
+    return 1 - Number(this.loss) / Number(this.totalGas)
+  }
+
+  get originalBalance(): bigint {
+    return this.stages[0].start
+  }
+
+  get totalGas(): bigint {
+    return this.stages.reduce((acc, stage) => acc + stage.gas, 0n)
+  }
+
+  get loss(): bigint {
+    return this.stages[-1].finish - this.stages[0].start
   }
 }
 
