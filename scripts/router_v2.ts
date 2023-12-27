@@ -18,7 +18,6 @@ type SwapParams = {
   weth: Address
   amountIn: bigint
   amountOutMin: bigint
-  gasPrice: bigint
   side: "buy" | "sell"
 }
 
@@ -35,7 +34,7 @@ export default class RouterV2 {
     return await this._contract.getAmountsOut(params.amountIn, [params.tokenIn, params.tokenOut])
   }
 
-  async approve(token: Address): Promise<ethers.ContractTransactionResponse> {
+  async approve(token: Address): Promise<ethers.TransactionResponse> {
     return await this._client.approve(token, routerV2)
   }
 
@@ -44,11 +43,9 @@ export default class RouterV2 {
     token,
     weth,
     amountIn,
-    amountOutMin,
-    gasPrice
+    amountOutMin
   }: SwapParams): Promise<ethers.ContractTransactionResponse> {
     const deadline = Math.floor(Date.now() / 1000) + 60 * 20
-    const nonce = await this._client.nonce()
 
     if (side === "sell") {
       return await this.sellTokens(
@@ -57,11 +54,7 @@ export default class RouterV2 {
         [token, weth],
         this._client.walletAddress,
         deadline,
-        {
-          gasLimit: 2000000n,
-          gasPrice,
-          nonce
-        }
+        this._client.overrides
       )
     } else {
       return await this.buyTokens(
@@ -70,10 +63,8 @@ export default class RouterV2 {
         this._client.walletAddress,
         deadline,
         {
-          gasLimit: 2000000n,
-          gasPrice,
+          ...this._client.overrides,
           value: amountIn,
-          nonce
         }
       )
     }

@@ -1,173 +1,102 @@
 import { ethers } from "ethers"
-import {
-  tap,
-  map,
-  concatMap,
-  from,
-} from "rxjs"
 import hre from "hardhat"
 import Client from "./client"
 import RouterV2 from "./router_v2"
 
-type Address = `0x${string}`
-type Data = {
-  weth: {
-    address: Address,
-  },
-  token: {
-    address: Address,
-    decimals: number,
-  },
-  fees: ethers.FeeData,
-}
-
-const resetFork = <T>(client: Client) => {
-  return concatMap((data: T) => {
-    return new Promise<typeof data>(async resolve => {
-      const latestBlock = await client.latestBlockNumber()
-      console.log("Resetting local chain...")
-      await hre.network.provider.request({
-        method: "anvil_reset",
-        params: [{
-          forking: {
-            jsonRpcUrl: "https://mainnet.infura.io/v3/c71051e5a5a54c1c9d1f51cff8838316",
-            blockNumber: latestBlock,
-          }
-        }]
-      })
-      console.log("Reset complete.")
-      resolve(data)
-    })
+const resetFork = async () => {
+  await hre.network.provider.request({
+    method: "anvil_reset",
+    params: [{
+      forking: {
+        jsonRpcUrl: "https://mainnet.infura.io/v3/c71051e5a5a54c1c9d1f51cff8838316",
+      }
+    }]
   })
 }
 
-const unwrapTransaction = (tx: ethers.ContractTransactionResponse) => {
-  const receipt = tx.wait()
-  if (!receipt) throw new Error("No receipt")
-
-  return receipt as Promise<ethers.ContractTransactionReceipt>
+const measure = async(name: string, func: () => Promise<any>) => {
+  const timeStart = performance.now()
+  const result = await func()
+  const timeEnd = performance.now()
+  console.log(name, "Time:", timeEnd - timeStart)
+  return result
 }
 
-const calculateGas = (receipt: ethers.ContractTransactionReceipt) => {
+const fastTransaction = async (client: Client, promise: Promise<ethers.TransactionResponse>) => {
+  const tx = await measure("Sending transaction:", async () => await promise)
+  await measure("Mining transaction:", async () => await hre.network.provider.send("anvil_mine"))
+  const receipt = await measure("Fetching receipt:", async () => await client.provider.getTransactionReceipt(tx.hash))
+  if (!receipt) throw new Error("Could not fetch receipt...")
+  return receipt
+}
+
+const snapshot = async (client: Client, promise: Promise<ethers.TransactionResponse>) => {
+  const originalBalance = await client.balance()
+  const receipt = await fastTransaction(client, promise)
+  const finalBalance = await client.balance()
+
+  if (!receipt) throw new Error("Could not fetch receipt...")
+
+  const gas = receipt.gasUsed as bigint * receipt.gasPrice as bigint
+
   return {
-    used: receipt.gasUsed,
-    price: receipt.gasPrice,
-    total: receipt.gasUsed * receipt.gasPrice,
-    formatted: ethers.formatEther(receipt.gasUsed * receipt.gasPrice)
+    start: originalBalance,
+    finish: finalBalance,
+    sansGas: finalBalance + gas,
+    gas
   }
 }
 
-type SwapParams = {
-  token: Address
-  weth: Address
-  amountIn: bigint
-  amountOutMin: bigint
-  gasPrice: bigint
-  side: "buy" | "sell"
-}
-
-const swapTokens = (
-  router: RouterV2,
-  params: SwapParams
-) => {
-  return from(router.swapTokens(params)).pipe(
-    concatMap(unwrapTransaction),
-    map(calculateGas),
-    tap((gas) => console.log("GAS REPORT:", gas))
-  )
-}
-
-const approveToken = (
-  router: RouterV2,
-  token: Address
-) => {
-  return from(router.approve(token)).pipe(
-    concatMap((tx) => {
-      return tx.wait()
+const simulateSwap = async (client: Client, data: any) => {
+  console.log("Simulating swap...")
+  const router = new RouterV2(client)
+  await measure("Fork reset:", async () => await resetFork())
+  console.log("Fork reset...")
+  const spent = ethers.parseUnits("0.05")
+  console.log("Buying...")
+  const buy = await snapshot(
+    client,
+    router.swapTokens({
+      weth: data.weth.address,
+      token: data.token.address,
+      amountIn: spent,
+      amountOutMin: 0n,
+      side: "buy"
     })
   )
+  console.log("Approving...")
+  const approve = await snapshot(
+    client,
+    router.approve(data.token.address)
+  )
+
+  const balance = await client.balanceOf(data.token.address)
+  console.log("Selling...")
+  const sell = await snapshot(
+    client,
+    router.swapTokens({
+      token: data.token.address,
+      weth: data.weth.address,
+      amountIn: balance,
+      amountOutMin: 0n,
+      side: "sell"
+    })
+  )
+  console.log("SOLD!!")
+
+  const loss = sell.finish - buy.start
+  const totalGas = buy.gas + sell.gas + approve.gas
+  const fee = Number(loss + totalGas) / Number(spent) * 100.0
+
+  return {
+    spent,
+    buy,
+    approve,
+    sell,
+    loss: ethers.formatEther(loss),
+    fee,
+    totalGas: ethers.formatEther(totalGas)
+  }
 }
 
-
-const simulateSwap = (client: Client) => {
-  const router = new RouterV2(client)
-
-  return concatMap((data: Data) => {
-    let originalBalance: bigint
-    let boughtBalance: bigint
-    let finalBalance: bigint
-    let buyGas: any
-    let sellGas: any
-
-    return from(client.balance()).pipe(
-      tap((balance) => { originalBalance = balance }),
-      concatMap(() => {
-        return swapTokens(
-          router,
-          {
-            weth: data.weth.address,
-            token: data.token.address,
-            amountIn: ethers.parseUnits("0.05"),
-            amountOutMin: 0n,
-            gasPrice: data.fees.maxFeePerGas || 18044090000n,
-            side: "buy"
-          }
-        )
-      }),
-      tap((gasReport) => {
-        buyGas = gasReport
-      }),
-      concatMap(() => {
-        return approveToken(router, data.token.address)
-      }),
-      concatMap(() => {
-        return client.balanceOf(data.token.address)
-      }),
-      tap((balance) => {
-        boughtBalance = balance
-      }),
-      concatMap((balance) => {
-        return swapTokens(
-          router,
-          {
-            token: data.token.address,
-            weth: data.weth.address,
-            amountIn: balance,
-            amountOutMin: 0n,
-            gasPrice: data.fees.maxFeePerGas || 18044090000n,
-            side: "sell"
-          }
-        )
-      }),
-      tap((gasReport) => {
-        sellGas = gasReport
-      }),
-      concatMap(() => {
-        return client.balance()
-      }),
-      tap((balance) => {
-        finalBalance = balance
-      }),
-      map(() => {
-        const difference = finalBalance - originalBalance
-        const fees = difference + (buyGas.total + sellGas.total)
-
-        return {
-          ...data,
-          simulation: {
-            originalBalance: ethers.formatEther(originalBalance),
-            boughtBalance: ethers.formatUnits(boughtBalance, data.token.decimals),
-            finalBalance: ethers.formatEther(finalBalance),
-            difference: ethers.formatEther(difference),
-            fees: ethers.formatEther(fees),
-            feePercent: (parseFloat(ethers.formatEther(fees)) / 0.05) * 100.0,
-            buyGas,
-            sellGas,
-          }
-        }
-      })
-    )
-  })
-}
-
-export { simulateSwap, resetFork }
+export { simulateSwap }

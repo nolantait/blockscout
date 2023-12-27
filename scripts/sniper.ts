@@ -3,24 +3,27 @@ import {
   Subject,
   tap,
   filter,
+  forkJoin,
+  concatMap,
+  from
 } from "rxjs"
 
 import { fetchOnChainData } from "./on_chain"
-import { simulateSwap, resetFork } from "./simulation"
+import { simulateSwap } from "./simulation"
 import Client from "./client"
-import RouterV2 from "./router_v2"
 import factoryAbi from "../abis/factory_v2.json"
+
+type Address = `0x${string}`
 
 const config = {
   privateKey: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
   websocketUrl: "wss://mainnet.infura.io/ws/v3/c71051e5a5a54c1c9d1f51cff8838316",
   rpcUrl: "https://mainnet.infura.io/v3/c71051e5a5a54c1c9d1f51cff8838316",
-  weth: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2" as const,
-  factoryV2: "0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f" as const,
-  routerV2: "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D" as const,
+  weth: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2" as Address,
+  factoryV2: "0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f" as Address,
+  routerV2: "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D" as Address,
 }
 
-type Address = `0x${string}`
 
 type PairCreated = {
   token0: Address,
@@ -38,42 +41,65 @@ const logPairCreated = (event: PairCreated) => {
   `)
 }
 
-const wethOnly = (pair: PairCreated) => {
+const wethOnly = (pair: PairCreated): boolean => {
   const valid = pair.token0.toLowerCase() === config.weth.toLowerCase() ||
     pair.token1.toLowerCase() === config.weth.toLowerCase()
   if (!valid) console.log("Skipping pair, not weth", pair)
   return valid
 }
 
-const enoughLiquidty = (data: any) => {
+const enoughLiquidty = (data: any): boolean => {
   const valid = data.liquidityUsd >= 10_000
   if (!valid) console.log("Skipping pair, insufficient liquidity", data)
   return valid
 }
 
 const lowFees = (data: any) => {
-  const valid = data.simulation.feePercent <= 15.0
-  if (!valid) console.log("Skipping pair, high fees", data)
-  return valid
+  // const valid = data.simulation.fees <= 15.0
+  // if (!valid) console.log("Skipping pair, high fees", data.simulation)
+  // return valid
+  return true
 }
 
 async function main() {
-  const client = new Client(config.websocketUrl, config.privateKey)
+  console.log("Starting sniper...")
+  const client = new Client(config.rpcUrl, config.privateKey)
+  console.log("Client started:", client.walletAddress)
   const testClient = new Client("http://localhost:8545", config.privateKey)
-  const factory = new ethers.Contract(config.factoryV2, factoryAbi, client.wallet)
+  console.log("Test client started:", client.walletAddress)
+
+  // const factory = new ethers.Contract(config.factoryV2, factoryAbi, client.wallet)
+
+  console.log("Syncing fees...")
+  await Promise.all([
+    testClient.syncNonce(),
+    testClient.syncFees(),
+    client.syncNonce(),
+    client.syncFees(),
+  ])
+  console.log("Fees synced...")
+
+  console.log("Client nonce:", client.baseNonce)
+  console.log("Test client nonce:", testClient.baseNonce)
 
   console.log("Listening for new pairs...")
 
   const stream = new Subject<PairCreated>()
 
+  let timeStart = 0
+  let timeFinish = 0
   stream.pipe(
+    tap(() => timeStart = performance.now()),
     tap(logPairCreated),
     filter(wethOnly),
     fetchOnChainData(client),
     filter(enoughLiquidty),
-    resetFork(testClient),
-    simulateSwap(testClient),
+    concatMap((data) => from(simulateSwap(testClient, data))),
     filter(lowFees),
+    tap(() => {
+      timeFinish = performance.now()
+      console.log("Time taken:", timeFinish - timeStart)
+    }),
   ).subscribe({
     next: (result) => {
       console.log("Result", result)
@@ -83,18 +109,21 @@ async function main() {
     },
   })
 
-  factory.on(
-    "PairCreated",
-    (token0, token1, pair) => {
-      stream.next({ token0, token1, pair })
-    }
-  )
+  // factory.on(
+  //   "PairCreated",
+  //   (token0, token1, pair) => {
+  //     stream.next({ token0, token1, pair } as PairCreated)
+  //   }
+  // )
 
+  console.log("Sending down the pipe...")
   stream.next({
-    token0: "0x14feE680690900BA0ccCfC76AD70Fd1b95D10e16" as const,
-    token1: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2" as const,
-    pair: "0x2a6c340bCbb0a79D3deecD3bc5cBc2605ea9259f" as const
+    token0: "0x12eF10A4fc6e1Ea44B4ca9508760fF51c647BB71" as Address,
+    token1: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2" as Address,
+    pair: "0x8C894D91748a42fC68f681090db06720779a7347" as Address
   })
+
+  console.log("After sending down the pipe...")
 }
 
 main().catch((error) => {

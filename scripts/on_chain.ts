@@ -11,18 +11,6 @@ import Client from "./client"
 
 type Address = `0x${string}`
 
-const getNonce = (client: Client) => {
-  return from(client.nonce())
-}
-
-const getEthBalance = (client: Client) => {
-  return from(client.balance())
-}
-
-const getBalance = (token: Address, client: Client) => {
-  return from(client.balanceOf(token))
-}
-
 const fetchLiqudity = (pair: Address, client: Client) => {
   const contract = client.pool(pair)
 
@@ -77,10 +65,6 @@ const fetchTokenInfo = (token: Address, client: Client) => {
   )
 }
 
-const fetchFees = (client: Client) => {
-  return from(client.fees())
-}
-
 type PairCreated = {
   token0: Address,
   token1: Address,
@@ -93,11 +77,9 @@ const fetchOnChainData = (client: Client) => {
       token0: fetchTokenInfo(token0, client),
       token1: fetchTokenInfo(token1, client),
       liquidity: fetchLiqudity(pair, client),
-      fees: fetchFees(client)
     }).pipe(
-      map(({ token0, token1, liquidity, fees }) => {
+      map(({ token0, token1, liquidity }) => {
         return {
-          fees,
           token0: {
             ...token0,
             ...liquidity.token0
@@ -113,13 +95,11 @@ const fetchOnChainData = (client: Client) => {
             return {
               weth: data.token0,
               token: data.token1,
-              fees: data.fees,
             }
           } else {
             return {
               weth: data.token1,
               token: data.token0,
-              fees: data.fees,
             }
           }
       }),
@@ -135,4 +115,4 @@ const fetchOnChainData = (client: Client) => {
   })
 }
 
-export { fetchOnChainData, getBalance, getEthBalance, getNonce }
+export { fetchOnChainData }
