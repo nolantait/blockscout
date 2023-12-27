@@ -9,17 +9,20 @@ import {
 type Address = `0x${string}`
 
 type PairCreated = {
-  token0: Address,
+  token: {
+    address: Address
+  },
 }
 
 const fetchOffChainData = () => {
-  return concatMap((pair: PairCreated) => {
-    const security = fetchGoSecurity(1, pair.token0)
-    const dexscreener = fetchDexscreener(pair.token0)
+  return concatMap((data: any) => {
+    const security = fetchGoSecurity(1, data.token.address)
+    const dexscreener = fetchDexscreener(data.token.address)
 
     return forkJoin([security, dexscreener]).pipe(
       map(([security, dexscreener]) => {
         return {
+          ...data,
           security,
           dexscreener,
         }

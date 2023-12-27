@@ -119,6 +119,8 @@ class Simulation {
   }
 
   get originalBalance(): bigint {
+    if (this.stages.length < 1) return 0n
+
     return this.stages[0].start
   }
 
@@ -127,7 +129,9 @@ class Simulation {
   }
 
   get loss(): bigint {
-    return this.stages[-1].finish - this.stages[0].start
+    if (this.stages.length < 2) return 0n
+
+    return this.stages[this.stages.length - 1].finish - this.stages[0].start
   }
 }
 

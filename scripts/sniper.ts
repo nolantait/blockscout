@@ -4,11 +4,15 @@ import {
   tap,
   filter,
   forkJoin,
+  map,
+  fromEvent,
   concatMap,
   from
 } from "rxjs"
 
+import factoryAbi from "../abis/factory_v2.json"
 import { fetchOnChainData } from "./on_chain"
+import { fetchOffChainData } from "./off_chain"
 import { simulateSwap } from "./simulation"
 import Client from "./client"
 
@@ -54,20 +58,19 @@ const enoughLiquidty = (data: any): boolean => {
 }
 
 const lowFees = (data: any) => {
-  // const valid = data.simulation.fees <= 15.0
-  // if (!valid) console.log("Skipping pair, high fees", data.simulation)
-  // return valid
-  return true
+  const valid = data.simulation.fees <= 20.0
+  if (!valid) console.log("Skipping pair, high fees", data.simulation)
+  return valid
 }
 
 async function main() {
   console.log("Starting sniper...")
-  const client = new Client(config.rpcUrl, config.privateKey)
+  const client = new Client(config.websocketUrl, config.privateKey)
   console.log("Client started:", client.walletAddress)
   const testClient = new Client("http://127.0.0.1:8545", config.privateKey)
   console.log("Test client started:", client.walletAddress)
 
-  // const factory = new ethers.Contract(config.factoryV2, factoryAbi, client.wallet)
+  const factory = new ethers.Contract(config.factoryV2, factoryAbi, client.wallet)
 
   console.log("Syncing fees...")
   await Promise.all([
@@ -93,8 +96,11 @@ async function main() {
     filter(wethOnly),
     fetchOnChainData(client),
     filter(enoughLiquidty),
-    concatMap((data) => from(simulateSwap(testClient, data))),
+    concatMap((data) => from(simulateSwap(testClient, data)).pipe(
+      map((simulation) => ({ ...data, simulation }))
+    )),
     filter(lowFees),
+    fetchOffChainData(),
     tap(() => {
       timeFinish = performance.now()
       console.log("Time taken:", timeFinish - timeStart)
@@ -108,21 +114,21 @@ async function main() {
     },
   })
 
-  // factory.on(
-  //   "PairCreated",
-  //   (token0, token1, pair) => {
-  //     stream.next({ token0, token1, pair } as PairCreated)
-  //   }
-  // )
+  factory.on(
+    "PairCreated",
+    (token0, token1, pair) => {
+      stream.next({ token0, token1, pair } as PairCreated)
+    }
+  )
 
-  console.log("Sending down the pipe...")
-  stream.next({
-    token0: "0x12eF10A4fc6e1Ea44B4ca9508760fF51c647BB71" as Address,
-    token1: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2" as Address,
-    pair: "0x8C894D91748a42fC68f681090db06720779a7347" as Address
-  })
-
-  console.log("After sending down the pipe...")
+  // console.log("Sending down the pipe...")
+  // stream.next({
+  //   token0: "0x12eF10A4fc6e1Ea44B4ca9508760fF51c647BB71" as Address,
+  //   token1: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2" as Address,
+  //   pair: "0x8C894D91748a42fC68f681090db06720779a7347" as Address
+  // })
+  //
+  // console.log("After sending down the pipe...")
 }
 
 main().catch((error) => {
